@@ -1541,6 +1541,14 @@ async function readConfig() {
 
     let configUpdated = false;
 
+    // Init radios if not present
+    if (!config.hasOwnProperty('Radios'))
+    {
+        config.Radios = defaultConfig.Radios;
+        configUpdated = true;
+        console.warn("Radio list initialized");
+    }
+
     // Populate peripheral config if it's missing
     if (!config.hasOwnProperty('Peripherals'))
     {
@@ -1555,6 +1563,22 @@ async function readConfig() {
         config.Midi = defaultConfig.Midi;
         configUpdated = true;
         console.warn("MIDI config was missing, added default & saved");
+    }
+
+    // Populate default audio config if it's missing
+    if (!config.hasOwnProperty('Audio'))
+    {
+        config.Audio = defaultConfig.Audio;
+        configUpdated = true;
+        console.warn("Audio config was missing, added default & saved");
+    }
+
+    // Populate default extension config if it's missing
+    if (!config.hasOwnProperty('Extension'))
+    {
+        config.Extension = defaultConfig.Extension;
+        configUpdated = true;
+        console.warn("Extension config was missing, added default & saved");
     }
 
     if (configUpdated) { saveConfig(); }
@@ -1581,6 +1605,14 @@ async function readConfig() {
 
     // Get radios
     radios = config.Radios;
+
+    // Create an empty list if we didn't load any
+    if (radios == null)
+    {
+        radios = []
+    }
+
+    // Update initial status for each radio
     radios = radios.map(v => ({
         ...v,
         status: {
