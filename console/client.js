@@ -562,7 +562,7 @@ function populateRadios() {
         console.info("Adding radio " + radio.name);
         console.debug(radio);
         // Add the radio card
-        addRadioCard("radio" + String(index), radio.name, radio.color);
+        addRadioCard(index, "radio" + String(index), radio.name, radio.color);
         // Update edit list
         addRadioToEditTable(radio);
         // Populate its text
@@ -587,9 +587,9 @@ function clearRadios() {
  * @param {string} id ID of the card element
  * @param {string} name Name to display in header
  */
-function addRadioCard(id, name, color) {
+function addRadioCard(idx, id, name, color) {
     // Log
-    console.debug(`Adding card for radio ${name} (id ${id})`);
+    console.debug(`Adding card for radio ${idx} (${name}), html id ${id}`);
 
     // New, much easier way to add new cards
     var newCard = radioCardTemplate.content.cloneNode(true);
@@ -612,6 +612,15 @@ function addRadioCard(id, name, color) {
     })
 
     $("#main-layout").append(newCard);
+
+    radios[idx].elements = {};
+
+    // Retrieve and store the new element as a javascript object in the radio array
+    radios[idx].elements.card = document.querySelector(`#${id}`);
+
+    // Store the audio bars as discrete elements, so we can update them in the animation callback without querying for them every time
+    radios[idx].elements.rxbar = radios[idx].elements.card.querySelector("#rx-bar");
+    radios[idx].elements.txbar = radios[idx].elements.card.querySelector("#tx-bar");
 }
 
 /**
@@ -824,7 +833,7 @@ window.electronAPI.saveRadioConfig((event, radioConfig) => {
     console.log("Adding radio " + newRadio.name);
     
     // Add the radio card
-    addRadioCard("radio" + String(newRadioIdx), newRadio.name, newRadio.color);
+    addRadioCard(newRadioIdx, "radio" + String(newRadioIdx), newRadio.name, newRadio.color);
     
     // Populate its text
     updateRadioCard(newRadioIdx);
@@ -1385,6 +1394,27 @@ function stopAlert() {
     }
     // Clear flag
     alertTonesInProgress = false;
+}
+
+/**
+ * Returns true if a radio is receiving clear or encrypted traffic
+ * @param {int} idx radio index
+ * @returns bool
+ */
+function isRadioReceiving(idx) {
+    // Radio is receiving if card has "receiving" or "encrypted" classes
+    const classes = radios[idx].elements.card.classList;
+    return (classes.contains("receiving") || classes.contains("encrypted"));
+}
+
+/**
+ * Returns true if a radio is receiving or transmitting
+ * @param {int} idx radio index
+ * @returns bool
+ */
+function isRadioActive(idx) {
+    const classes = radios[idx].elements.card.classList;
+    return (classes.contains("receiving") || classes.contains("encrypted") || classes.contains("transmitting"));
 }
 
 /***********************************************************************************
@@ -2345,15 +2375,15 @@ function audioMeterCallback() {
     radios.forEach((radio, idx) => {
         // Ignore radios with no connected audio
         if (radios[idx].audioSrc == null) {
-            if ($(`.radio-card#radio${idx} #rx-bar`).width != 0) {
-                $(`.radio-card#radio${idx} #rx-bar`).width(0);
+            if (radios[idx].elements.rxbar.style.width != 0) {
+                radios[idx].elements.rxbar.style.width = 0;
             }
             return
         }
         // Ignore radio that isn't receiving (checking for the class compensates for the rx delay)
-        if (!($(`.radio-card#radio${idx}`).hasClass("receiving") || $(`.radio-card#radio${idx}`).hasClass("encrypted"))) {
-            if ($(`.radio-card#radio${idx} #rx-bar`).width != 0) {
-                $(`.radio-card#radio${idx} #rx-bar`).width(0);
+        if (!isRadioReceiving(idx)) {
+            if (radios[idx].elements.rxbar.style.width != 0) {
+                radios[idx].elements.rxbar.style.width = 0;
             }
             return
         }
@@ -2364,20 +2394,22 @@ function audioMeterCallback() {
         for (const amplitude of radios[idx].audioSrc.analyzerData) { sumSquares += (amplitude * amplitude); }
         // We just scale this summed squared value by a constant to avoid actually doing an RMS calculation every single frame
         const newPct = String(Math.sqrt(sumSquares / radios[idx].audioSrc.analyzerData.length).toFixed(3) * 300);
-        $(`.radio-card#radio${idx} #rx-bar`).width(newPct);
+        radios[idx].elements.rxbar.style.width = newPct;
     });
 
     // Input meter (only show when PTT)
-    if (pttActive) {
-        // Get data from mic
-        audio.inputAnalyzer.getFloatTimeDomainData(audio.inputPcmData);
-        sumSquares = 0.0;
-        for (const amplitude of audio.inputPcmData) { sumSquares += amplitude * amplitude; }
-        const newPct = String(Math.sqrt(sumSquares / audio.outputPcmData.length).toFixed(3) * 300);
-        // Apply to selected radio only
-        $(`.radio-card#radio${selectedRadioIdx} #tx-bar`).width(newPct);
-    } else {
-        $(`.radio-card#radio${selectedRadioIdx} #tx-bar`).width(0);
+    if (selectedRadioIdx != null && selectedRadioIdx >= 0) {
+        if (pttActive) {
+            // Get data from mic
+            audio.inputAnalyzer.getFloatTimeDomainData(audio.inputPcmData);
+            sumSquares = 0.0;
+            for (const amplitude of audio.inputPcmData) { sumSquares += amplitude * amplitude; }
+            const newPct = String(Math.sqrt(sumSquares / audio.outputPcmData.length).toFixed(3) * 300);
+            // Apply to selected radio only
+            radios[selectedRadioIdx].elements.txbar.style.width = newPct;
+        } else {
+            radios[selectedRadioIdx].elements.txbar.style.width = 0;
+        }
     }
 
     // Request next frame
@@ -2390,7 +2422,7 @@ function checkAudioMeterCallback()
     console.debug("Checking if any radio's audio is active");
     audio_active = false;
     radios.forEach((radio, idx) => {
-        if ($(`.radio-card#radio${idx}`).hasClass("receiving") || $(`.radio-card#radio${idx}`).hasClass("encrypted") || $(`.radio-card#radio${idx}`).hasClass("transmitting"))
+        if (isRadioActive(idx))
         {
             console.debug(`${radio.name} audio active`);
             audio_active = true;
@@ -2415,8 +2447,8 @@ function checkAudioMeterCallback()
 function zeroAudioMeters()
 {
     radios.forEach((radio, idx) => {
-        $(`.radio-card#radio${idx} #rx-bar`).width(0);
-        $(`.radio-card#radio${idx} #tx-bar`).width(0);
+        radios[idx].elements.rxbar.style.width = 0;
+        radios[idx].elements.txbar.style.width = 0;
     });
 }
 
