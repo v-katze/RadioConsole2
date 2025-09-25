@@ -36,14 +36,25 @@ async function readConfig(defaultConfig) {
             return defaultConfig;
         }
         catch (e) {
-            console.error("Failed to write default config file " + configPath + "!");
+            alert(`Failed to write default config file ${configPath}: ${e}`);
             console.error(e);
         }
     // Read the file if it already exists
     } else {
         console.log("Reading config file from " + configPath);
         const configJson = fs.readFileSync(configPath, { encoding: 'utf8', flag: 'r' });
-        return configJson;
+        // Try to parse
+        try {
+            config = JSON.parse(configJson);
+            console.debug("Got config");
+            console.debug(config);
+            return config;
+        }
+        catch (e) {
+            alert(`Failed to parse config JSON ${configJson}: ${e}`);
+            console.warning('Using default config');
+            return defaultConfig;
+        }
     }
 }
 

@@ -1556,18 +1556,11 @@ function getRadioIndex(id) {
 
 async function readConfig() {
 
-    // Read config via IPC and parse
-    configJson = await window.electronAPI.readConfig(defaultConfig);
-    try {
-        console.debug("Reading config data");
-        console.debug(configJson);
-        config = JSON.parse(configJson);
-    }
-    catch (e) {
-        alert("Error reading config: " + e);
-    }
+    // Read config via IPC
+    config = await window.electronAPI.readConfig(defaultConfig);
     
-    console.debug("Successfully read config json");
+    console.debug("Successfully read config");
+    console.debug(config);
 
     let configUpdated = false;
 
