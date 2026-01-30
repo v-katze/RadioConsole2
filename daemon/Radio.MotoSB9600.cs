@@ -26,9 +26,21 @@ namespace moto_sb9600
         /// </summary>
         public SB9600.HeadType ControlHeadType = SB9600.HeadType.W9;
         /// <summary>
+        /// Whether to reset the radio on initial connect
+        /// </summary>
+        public bool ResetOnConnect = true;
+        /// <summary>
         /// Whether to use RX LEDs as an additional RX state trigger
         /// </summary>
         public bool UseLedsForRx = false;
+        /// <summary>
+        /// Whether to invert the expected polarity of the BUSY control line
+        /// </summary>
+        public bool InvertBusy = false;
+        /// <summary>
+        /// Whether to passively monitor the SB9600 line (prevents radio control)
+        /// </summary>
+        public bool PassiveMonitor = false;
         /// <summary>
         /// Softkey binding dictionary
         /// </summary>
@@ -60,18 +72,18 @@ namespace moto_sb9600
         public MotoSb9600Radio(
             string name, string desc, bool rxOnly,
             IPAddress listenAddress, int listenPort,
-            string serialPortName, SB9600.HeadType headType, bool useLedsForRx, Dictionary<ControlHeads.ButtonName, SoftkeyName> softkeyBindings,
+            MotoSb9600Config sb9600Config,
             Action<short[]> txAudioCallback, int txAudioSampleRate, Action<AudioFormat> rtcFormatCallback,
-            List<rc2_core.SoftkeyName> softkeys,
-            List<rc2_core.TextLookup> zoneLookups = null, List<rc2_core.TextLookup> chanLookups = null
+            List<SoftkeyName> softkeys,
+            List<TextLookup> zoneLookups = null, List<TextLookup> chanLookups = null
             ) : base(name, desc, rxOnly, listenAddress, listenPort, softkeys, zoneLookups, chanLookups, txAudioCallback, txAudioSampleRate, rtcFormatCallback)
         {
             // Save softkey lookups
-            this.softkeyBindings = softkeyBindings;
+            softkeyBindings = sb9600Config.SoftkeyBindings;
             // Init SB9600
-            sb9600 = new SB9600(serialPortName, headType, this.softkeyBindings, this, useLedsForRx);
+            sb9600 = new SB9600(sb9600Config, this);
             sb9600.StatusCallback += () => {
-                this.RadioStatusCallback();
+                RadioStatusCallback();
             };
         }
 
@@ -82,8 +94,8 @@ namespace moto_sb9600
         public override void Start(bool reset = false)
         {
             Log.Information($"Starting new Motorola SB9600 radio instance");
-            base.Start(reset);
-            sb9600.Start(reset);
+            base.Start();
+            sb9600.Start();
         }
 
         /// <summary>

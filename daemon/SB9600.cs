@@ -355,9 +355,13 @@ namespace moto_sb9600
 
         private bool newStatus = false;
 
-        private bool noReset = false;
+        private bool resetOnConnect = true;
 
         private bool useLedsForRx = false;
+
+        private bool invertBusy = false;
+
+        private bool passiveMon = false;
 
         /// <summary>
         /// Reference back to Radio state object for status updates
@@ -789,29 +793,40 @@ namespace moto_sb9600
             }
         }
 
-        public SB9600(string portName, HeadType controlHead, Dictionary<ControlHeads.ButtonName, SoftkeyName> softkeyBindings, MotoSb9600Radio radio, bool useLedsForRx = false)
+        public SB9600(MotoSb9600Config config, MotoSb9600Radio radio)
         {
-            Port = new SerialPort(portName);
+            Port = new SerialPort(config.SerialPort);
             Port.BaudRate = 9600;
-            ControlHead = controlHead;
-            this.useLedsForRx = useLedsForRx;
-            this.softkeyBindings = softkeyBindings;
+            ControlHead = config.ControlHeadType;
+            useLedsForRx = config.UseLedsForRx;
+            invertBusy = config.InvertBusy;
+            passiveMon = config.PassiveMonitor;
+            softkeyBindings = config.SoftkeyBindings;
+            resetOnConnect = config.ResetOnConnect;
             this.radio = radio;
         }
 
-        public void Start(bool noreset)
+        public void Start()
         {
-            noReset = noreset;
             // Check if serial port exists first
-            Log.Verbose("Available serial ports:");
+            /*Log.Verbose("Available serial ports:");
             foreach (var name in SerialPort.GetPortNames())
             {
                 Log.Verbose(name);
             }
-            /*if (!SerialPort.GetPortNames().Contains(Port.PortName))
+            if (!SerialPort.GetPortNames().Contains(Port.PortName))
             {
                 throw new Exception("Specified serial port does not exist!");
             }*/
+            // Print config
+            Log.Debug("SB9600 Configuration:");
+            Log.Debug("    Port: {0}", Port.PortName);
+            Log.Debug("    Control Head: {0}", Enum.GetName(ControlHead));
+            Log.Debug("    Reset on Connect: {0}", resetOnConnect);
+            Log.Debug("    Use LED Status for RX Indication: {0}", useLedsForRx);
+            Log.Debug("    Invert BUSY: {0}", invertBusy);
+            Log.Debug("    Passive Monitor: {0}", passiveMon);
+            // Start the loop
             Log.Debug("Starting SB9600 service on serial port {SerialPortName}", Port.PortName);
             ts = new CancellationTokenSource();
             ct = ts.Token;
@@ -844,7 +859,12 @@ namespace moto_sb9600
         /// <param name="busy"></param>
         private void setBusy(bool busy)
         {
-            Port.DtrEnable = busy;
+            if (passiveMon)
+            {
+                Log.Warning("SB9600 passive monitor enabled, ignoring BUSY command");
+                return;
+            }
+            Port.DtrEnable = invertBusy ? !busy : busy;
         }
 
         /// <summary>
@@ -853,24 +873,36 @@ namespace moto_sb9600
         /// <returns></returns>
         private bool getBusy()
         {
-            return Port.CtsHolding;
+            return invertBusy ? !Port.CtsHolding : Port.CtsHolding;
         }
 
         private bool Reset()
         {
+            if (passiveMon)
+            {
+                Log.Warning("SB9600 passive monitor enabled, ignoring reset command");
+                return false;
+            }
             SB9600Msg msg = new SB9600Msg((byte)SB9600Addresses.BROADCAST, [0x00, 0x01], 0x08);
             return sendSb9600(msg);
         }
 
         private bool sendSb9600(SB9600Msg msg, int attempts = 3)
         {
+            if (passiveMon)
+            {
+                Log.Warning("SB9600 passive monitor enabled, ignoring send command");
+                return false;
+            }
             // Wait for busy to drop
             while (getBusy())
             {
                 Log.Debug("Waiting for BUSY to drop");
+                Thread.Sleep(2);
             }
             // Grab busy
             setBusy(true);
+            Log.Verbose("SB9600 BUSY: {0}", "ASSERTED");
             // Encode
             byte[] data = msg.Encode();
             // flag for successful send
@@ -879,9 +911,9 @@ namespace moto_sb9600
             {
                 // flush the buffers
                 Port.DiscardInBuffer();
+                Port.DiscardOutBuffer();
                 // Send the msg
                 Port.Write(data, 0, data.Length);
-                Port.DiscardOutBuffer();
                 attempts--;
                 // Wait for RX bytes to come back
                 while (Port.BytesToRead < data.Length) { Thread.Sleep(1); }
@@ -903,6 +935,7 @@ namespace moto_sb9600
             Port.DiscardInBuffer();
             Port.DiscardOutBuffer();
             setBusy(false);
+            Log.Verbose("SB9600 BUSY: {0}", "CLEARED");
             return sent;
         }
 
@@ -1622,13 +1655,40 @@ namespace moto_sb9600
             Log.Verbose("Port opened");
 
             // If we have an initial BUSY on startup, wait for that to clear and then flush the buffer
+            Log.Verbose("Waiting for BUSY to clear...");
             while (getBusy() && !token.IsCancellationRequested) { }
+
+            // Clear buffers
+            Log.Verbose("Clearing serial buffers...");
             Port.DiscardInBuffer();
             Port.DiscardOutBuffer();
-            Log.Verbose("Buffers cleared");
+
+            // Test BUSY
+            if (!passiveMon)
+            {
+                Log.Verbose("Testing BUSY...");
+                setBusy(true);
+                bool test = getBusy();
+                if (!test)
+                {
+                    Log.Error($"SB9600 assert BUSY failed! Ensure radio connection is correct.");
+                    radio.Stop();
+                    return;
+                }
+                setBusy(false);
+                test = getBusy();
+                if (test)
+                {
+                    Log.Error($"SB9600 clear BUSY failed! Ensure radio connection is correct.");
+                    radio.Stop();
+                    return;
+                }
+            }
+            else
+                Log.Warning("SB9600 configured for passive monitoring, radio control will not work!");
 
             // Reset the radio
-            if (!noReset)
+            if (resetOnConnect && !passiveMon)
             {
                 Log.Debug("Resetting radio");
                 if (!Reset())
@@ -1642,11 +1702,22 @@ namespace moto_sb9600
             // Rolling 5-byte SB9600 message buffer
             List<byte> sb9600Buffer = new List<byte>();
 
+            // Status flag vars for verbose logging
+            bool busy = false;
+
             Log.Debug("SB9600 service running");
             while (!token.IsCancellationRequested)
             {
                 try
                 {
+                    // Check busy for status print
+                    if (getBusy() != busy)
+                    {
+                        bool newBusy = getBusy();
+                        Log.Verbose("SB9600 BUSY: {0}", newBusy ? "ASSERTED": "CLEARED");
+                        busy = newBusy;
+                    }
+
                     // First, check if we've entered SBEP mode
                     if (inSbep)
                     {
@@ -1716,7 +1787,7 @@ namespace moto_sb9600
 
                     // Transmit next
                     // Send a message from the queue if we're not waiting on RX and not busy
-                    if (!getBusy() && !inSbep)
+                    if (!getBusy() && !inSbep && !passiveMon)
                     {
                         // Try and get a message and send it
                         QueueMessage msg = null;
