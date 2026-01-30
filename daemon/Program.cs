@@ -33,8 +33,6 @@ using SIPSorceryMedia.SDL2;
 using Org.BouncyCastle.Asn1.IsisMtt.X509;
 using daemon;
 using System.Runtime;
-using DirectShowLib;
-using MathNet.Numerics;
 using rc2_core;
 using moto_sb9600;
 
@@ -57,33 +55,37 @@ namespace netcore_cli
         // Main Program Entry
         static async Task<int> Main(string[] args)
         {
-            // Logging
-            Log.Logger = new LoggerConfiguration()
-                .MinimumLevel.ControlledBy(loggerSwitch)
-                .WriteTo.Console(
-                    outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}"
-                )
-                .CreateLogger();
-
             /*
              * Command Line Argument Handling
             */
+            
             // Root Command
-            var cmdRoot = new RootCommand();
+            RootCommand cmdRoot = new RootCommand();
+            
             // List Audio Devices Command
-            var cmdListAudio = new Command("list-audio", "List available audio input/output devices");
-            cmdListAudio.SetHandler(handler =>
+            Command cmdListAudio = new Command("list-audio")
+            {
+                Description = "List available audio input/output devices"
+            };
+            cmdListAudio.SetAction((parseResult) =>
             {
                 ListAudioDeices();
             });
-            cmdRoot.AddCommand(cmdListAudio);
+            cmdRoot.Add(cmdListAudio);
+            
             // Get audio device info command
-            var cmdGetAudio = new Command("get-audio", "Get audio device information for device name");
-            var optDeviceName = new Option<string>(new[] {"--device"}, "Device name");
-            cmdGetAudio.AddOption(optDeviceName);
-            cmdGetAudio.SetHandler(context =>
+            Command cmdGetAudio = new Command("get-audio")
             {
-                string devName = context.ParseResult.GetValueForOption(optDeviceName);
+                Description = "Get audio device information for device name"
+            };
+            Option<string> optDeviceName = new Option<string>("--device")
+            {
+                Description = "Device name"
+            };
+            cmdGetAudio.Options.Add(optDeviceName);
+            cmdGetAudio.SetAction(parseResult =>
+            {
+                string devName = parseResult.GetValue(optDeviceName);
                 if (devName == null)
                 {
                     Log.Error("No device name specified!");
@@ -91,47 +93,70 @@ namespace netcore_cli
                 }
                 GetAudioDeviceInfo(devName);
             });
-            cmdRoot.AddCommand(cmdGetAudio);
+            cmdRoot.Add(cmdGetAudio);
 
-            // Define arguments
-            var optConfigFile = new Option<FileInfo>(new[] { "--config", "-c" }, "YAML daemon config file");
-            var optDebug = new Option<bool>(new[] { "--debug", "-d" }, "enable debug logging");
-            var optVerbose = new Option<bool>(new[] { "--verbose", "-v" }, "enable verbose logging (lots of prints)");
-            var optNoReset = new Option<bool>(new[] { "--no-reset", "-nr" }, "don't reset radio on startup");
-            var optLogging = new Option<bool>(new[] { "--log", "-l" }, "log console output to file");
+            // Define root command arguments
+            Option<FileInfo> optConfigFile = new Option<FileInfo>("--config", "-c")
+            {
+                Description = "YAML daemon config file"
+            };
+            Option<bool> optDebug = new Option<bool>("--debug", "-d")
+            {
+                Description = "enable debug logging"
+            };
+            Option<bool> optVerbose = new Option<bool>("--verbose", "-v")
+            {
+                Description = "enable verbose logging (lots of prints)"
+            };
+            Option<bool> optNoReset = new Option<bool>("--no-reset", "-nr")
+            {
+                Description = "don't reset radio on startup"
+            };
+            Option<bool> optLogging = new Option<bool>("--log", "-l")
+            {
+                Description = "log console output to file"
+            };
 
             // Add arguments
-            cmdRoot.AddOption(optConfigFile);
-            cmdRoot.AddOption(optVerbose);
-            cmdRoot.AddOption(optDebug);
-            cmdRoot.AddOption(optNoReset);
-            cmdRoot.AddOption(optLogging);
+            cmdRoot.Options.Add(optConfigFile);
+            cmdRoot.Options.Add(optVerbose);
+            cmdRoot.Options.Add(optDebug);
+            cmdRoot.Options.Add(optNoReset);
+            cmdRoot.Options.Add(optLogging);
 
             // Main Runtime Handler
-            cmdRoot.SetHandler(async (context) =>
+            cmdRoot.SetAction(async (parseResult) =>
             {
                 // Make sure a config file was specified
-                if (context.ParseResult.GetValueForOption(optConfigFile) == null)
+                if (parseResult.GetValue(optConfigFile) == null)
                 {
                     Log.Error("No config file specified!");
-                    context.ExitCode = 1;
+                    Environment.Exit(1);
                 } 
                 else
                 {
-                    FileInfo configFile = context.ParseResult.GetValueForOption(optConfigFile);
-                    bool debug = context.ParseResult.GetValueForOption(optDebug);
-                    bool verbose = context.ParseResult.GetValueForOption(optVerbose);
-                    bool noreset = context.ParseResult.GetValueForOption(optNoReset);
-                    bool log = context.ParseResult.GetValueForOption(optLogging);
+                    FileInfo configFile = parseResult.GetValue(optConfigFile);
+                    bool debug = parseResult.GetValue(optDebug);
+                    bool verbose = parseResult.GetValue(optVerbose);
+                    bool noreset = parseResult.GetValue(optNoReset);
+                    bool log = parseResult.GetValue(optLogging);
                     await Startup(configFile, debug, verbose, noreset, log);
                 }
             });
 
-            return await cmdRoot.InvokeAsync(args);
+            return await cmdRoot.Parse(args).InvokeAsync();
         }
 
         static async Task Startup(FileInfo configFile, bool debug, bool verbose, bool noreset, bool log)
         {
+            // Logging configuration
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.ControlledBy(loggerSwitch)
+                .WriteTo.Console(
+                    outputTemplate: "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}"
+                )
+                .CreateLogger();
+
             // Add handler for SIGINT
             ManualResetEvent startShutdown = new ManualResetEvent(false);
             Console.CancelKeyPress += (sender, args) => {
@@ -171,6 +196,7 @@ namespace netcore_cli
             }
 
             // Setup Audio Devices
+            Log.Logger.Debug("Configuring local audio");
             localAudio = new LocalAudio(Config.Audio.RxDevice, Config.Audio.TxDevice, radio, Config.Control.RxOnly);
 
             // Switch based on control mode
@@ -295,7 +321,7 @@ namespace netcore_cli
         {
             Log.Information("Getting audio device information for {devName}", devName);
             SDL2Helper.InitSDL();
-            var audioEncoder = new OpusAudioEncoder();
+            AudioEncoder audioEncoder = new AudioEncoder();
             var audioFormatManager = new MediaFormatManager<AudioFormat>(audioEncoder.SupportedFormats);
             AudioFormat audioFormat = audioFormatManager.SelectedFormat;
             var audioSpec = SDL2Helper.GetAudioSpec(audioFormat.ClockRate, 1);

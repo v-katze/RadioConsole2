@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using MathNet.Numerics.Statistics;
 using Serilog;
 using SIPSorcery.Media;
 using SIPSorceryMedia.Abstractions;
@@ -73,20 +72,20 @@ namespace daemon
             // Init SDL2
             SDL2Helper.InitSDL();
 
-            Log.Information("Creating SDL2 local audio devices:");
+            Log.Logger.Information("Creating SDL2 local audio devices:");
 
             // Setup RX audio devices
             rxEncoder = new AudioEncoder();
             rxSource = new SDL2AudioSource(rxDevice, rxEncoder);
             rxSource.OnAudioSourceError += (e) => {
-                Log.Error("Got RX audio error: {error}", e);
+                Log.Logger.Error("Got RX audio error: {error}", e);
             };
             // Setup RX sample callback
             rxSource.OnAudioSourceEncodedSample += (uint durationRtpUnits, byte[] samples) => {
-                //Log.Verbose("Got {count} encoded RX samples", samples.Length);
+                //Log.Logger.Verbose("Got {count} encoded RX samples", samples.Length);
                 RxEncodedSampleCallback(durationRtpUnits, samples);
             };
-            Log.Information("    RX: {rxDevice}", rxDevice);
+            Log.Logger.Information("    RX: {rxDevice}", rxDevice);
             // Setup TX audio devices if we aren't rx-only
             if (!rxOnly)
             {
@@ -96,7 +95,7 @@ namespace daemon
                 {
                     Log.Error("Got RX audio error: {error}", e);
                 };
-                Log.Information("    TX: {txDevice}", txDevice);
+                Log.Logger.Information("    TX: {txDevice}", txDevice);
             }
         }
 
@@ -114,7 +113,7 @@ namespace daemon
             {
                 txEndpoint.StartAudioSink();
             }
-            Log.Debug("Audio device(s) started using format {format}/{rate}/{chans}", audioFormat.FormatName, audioFormat.ClockRate, audioFormat.ChannelCount);
+            Log.Logger.Debug("Audio device(s) started using format {format}/{rate}/{chans}", audioFormat.FormatName, audioFormat.ClockRate, audioFormat.ChannelCount);
         }
 
         public async Task Stop()
@@ -126,7 +125,7 @@ namespace daemon
             }
             // De-init SDL2
             SDL2Helper.QuitSDL();
-            Log.Debug("Audio devices stopped");
+            Log.Logger.Debug("Audio devices stopped");
         }
 
         public void TxAudioCallback(short[] pcm16Samples)
