@@ -182,6 +182,9 @@ var stuckButtonTimeout = null;
 
 testInput = null;
 
+// This side of the WebRTC connection will be impolite
+var polite = false;
+
 // Radio Card Tempalte
 const radioCardTemplate = document.querySelector('#card-template');
 
@@ -1740,36 +1743,30 @@ function dummyTrack() {
  * @returns {boolean} true if connection starts successfully
  */
 function startWebRtc(idx) {
-    console.log(`Starting WebRTC session for ${radios[idx].name}`);
-    
-    // Find the right getUserMedia()
-    // This isn't needed with the new method below
-    /*if (!navigator.getUserMedia) {
-        navigator.getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
-    }*/
-    // Check if the input track has ended, and restart if so
-
+    // Wait for audio to be running first
     if (!audio.running) {
-        console.warn(`Waiting for mic services to be running for radio ${idx}`);
+        console.warn(`[${radios[idx].name}]: Waiting for mic services to be running`);
         setTimeout(startWebRtc, 100, idx);
-    } else {
-        // Restart mic track if needed
-        if (!audio.inputDest.stream.active) {
-            console.warn(`Mic stream was inactive, restarting`);
-            restartMicTrack();
-        }
-        // Create peer
-        radios[idx].rtc.peer = createPeerConnection(idx);
-        if (radios[idx].rtc.peer) {
-            console.log("Created peer connection");
-        } else {
-            console.error("Failed to create peer connection");
-            return false
-        }
-        // Connect track
-        console.log(`Adding mic track to radio ${idx}`);
-        radios[idx].rtc.peer.addTrack(audio.inputTrack);
+        return;
     }
+
+    console.log(`[${radios[idx].name}]: Starting WebRTC session`);
+    // Restart mic track if needed
+    if (!audio.inputDest.stream.active) {
+        console.warn(`[${radios[idx].name}]: Mic stream was inactive, restarting`);
+        restartMicTrack();
+    }
+    // Create peer
+    radios[idx].rtc.peer = createPeerConnection(idx);
+    if (radios[idx].rtc.peer) {
+        console.log(`[${radios[idx].name}]: Created peer connection`);
+    } else {
+        console.error(`[${radios[idx].name}]: Failed to create peer connection`);
+        return false
+    }
+    // Connect track
+    console.log(`[${radios[idx].name}]: Adding mic track to WebRTC peer connection`);
+    radios[idx].rtc.peer.addTrack(audio.inputTrack);
 }
 
 /**
@@ -1778,16 +1775,23 @@ function startWebRtc(idx) {
  * @returns 
  */
 function stopWebRtc(idx) {
+    console.debug(`[${radios[idx].name}]: Stopping WebRTC`);
+    
     // Return if there was never a peer connection to begin with
-    console.debug(`Stopping RTC for radio ${idx}`);
     if (!radios[idx].rtc.hasOwnProperty('peer')) {
-        console.log("No peer connection created");
+        console.debug(`[${radios[idx].name}]: No peer connection created`);
         return
     }
 
+    // Return if peer is null
+    if (radios[idx].rtc.peer === null) {
+        console.debug(`[${radios[idx].name}]: Peer already closed & dispoed`);
+        return;
+    }
+
     // Return if stuff is already closed
-    if (radios[idx].rtc.peer.connectionState == "closed") {
-        console.log("RTC peer connection already closed");
+    if (radios[idx].rtc.peer.connectionState === "closed") {
+        console.debug(`[${radios[idx].name}]: RTC peer connection already closed`);
         return
     }
 
@@ -1799,17 +1803,18 @@ function stopWebRtc(idx) {
 
     // Close any active peer transceivers
     if (radios[idx].rtc.peer.getTransceivers) {
-        radios[idx].rtc.peer.getTransceivers().forEach(function(tx, idx) {
-            console.debug(`Stopping RTC txcvr ${idx}`);
+        radios[idx].rtc.peer.getTransceivers().forEach(function(tx, txidx) {
+            console.debug(`[${radios[idx].name}]: Stopping WebRTC peer txcvr ${txidx}`);
             if (tx.stop) {
                 tx.stop();
             }
-        })
+        });
     }
 
     // Close the peer connection
-    console.log("Closing peer connection");
+    console.log(`[${radios[idx].name}]: Closing WebRTC peer connection`);
     radios[idx].rtc.peer.close();
+    radios[idx].rtc.peer = null;
 
     // Reset audio routing
     radios[idx].audioSrc = null;
@@ -1817,6 +1822,10 @@ function stopWebRtc(idx) {
 
 /**
  * Create a new WebRTC peer connection
+ * 
+ * We follow Mozilla's perfect WebRTC negotiation pattern:
+ * https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation
+ * 
  * @param {int} idx the index of the radio in radios[]
  * @returns {RTCPeerConnection} the created peer connection object
  */
@@ -1831,13 +1840,22 @@ function createPeerConnection(idx) {
     // Create peer
     var peer = new RTCPeerConnection(rtcConfig);
 
-    // Register event listeners for debug
-    peer.addEventListener('icegatheringstatechange', function() {
-        console.log(`new peer iceGatheringState for radio ${radios[idx].name}: ${peer.iceGatheringState}`);
-    }, false);
+    // Flags for WebRTC connection states
+    radios[idx].rtc.makingOffer = false;
+    radios[idx].rtc.ignoreOffer = false;
+    radios[idx].rtc.isSettingRemoteAnswerPending = false;
 
-    peer.addEventListener('iceconnectionstatechange', function() {
-        console.log(`new peer iceConnectionState for radio ${radios[idx].name}: ${peer.iceConnectionState}`);
+    // List for holding pending ICE candidates
+    radios[idx].rtc.pendingCandidates = [];
+
+    // Debug print for ICE gathering state
+    peer.onicegatheringstatechange = () => {
+        console.debug(`[${radios[idx].name}]: new WebRTC peer iceGatheringState: ${peer.iceGatheringState}`);
+    }
+
+    // Handler for ICE connection state change
+    peer.oniceconnectionstatechange = () => {
+        console.debug(`[${radios[idx].name}]: new WebRTC peer iceConnectionState: ${peer.iceConnectionState}`);
         if (peer.iceConnectionState == "connected") {
             // update UI
             radioConnected(idx);
@@ -1847,53 +1865,82 @@ function createPeerConnection(idx) {
             checkRoundTripTime(idx);
         } else if (peer.iceConnectionState == "failed") {
             // Disconnect the client if we had an error (for now, maybe auto-reconnect later?)
-            console.error(`WebRTC ICE connection failed for radio ${radios[idx].name}`);
+            console.error(`[${radios[idx].name}]: WebRTC ICE connection failed`);
             stopWebRtc(idx);
-            radios[idx].wsConn.close();
+            //radios[idx].wsConn.close();
         } else if (peer.iceConnectionState == "disconnected") {
-            console.error(`WebRTC ICE connection disconnected for radio ${radios[idx].name}`);
+            console.error(`[${radios[idx].name}]: WebRTC ICE connection disconnected`);
             stopWebRtc(idx);
-            if (radios[idx].wsConn) {
+            /**if (radios[idx].wsConn) {
                 radios[idx].wsConn.close();
-            }
+            }*/
         }
-    }, false);
+    };
 
-    peer.addEventListener('signalingstatechange', function() {
-        console.log(`new peer signallingState for radio ${radios[idx].name}: ${peer.signalingState}`);
-    })
+    // Handler for any signaling state changes
+    peer.onsignalingstatechange = () => {
+        console.debug(`[${radios[idx].name}]: new WebRTC peer signallingState: ${peer.signalingState}`);
+    };
 
-    peer.addEventListener('connectionstatechange', function() {
-        console.log(`new peer connectionState for radio ${radios[idx].name}: ${peer.connectionState}`);
+    // Handler for any overall connection state changes
+    peer.onconnectionstatechange = () => {
+        console.debug(`[${radios[idx].name}]: new WebRTC peer connectionState: ${peer.connectionState}`);
         if (peer.connectionState === "connecting") {
             $(`#radio${idx} .icon-connect`).removeClass('connected');
             $(`#radio${idx} .icon-connect`).removeClass('disconnected');
             $(`#radio${idx} .icon-connect`).addClass('connecting');
             $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC peer connecting');
         }
-    })
+        else if (peer.connectionState === "connected") {
+            $(`#radio${idx} .icon-connect`).removeClass('connecting');
+            $(`#radio${idx} .icon-connect`).removeClass('disconnected');
+            $(`#radio${idx} .icon-connect`).addClass('connected');
+            $(`#radio${idx} .icon-connect`).parent().prop('title','Connected, OK');
+        }
+        else if (peer.connectionState === "disconnected") {
+            $(`#radio${idx} .icon-connect`).removeClass('connecting');
+            $(`#radio${idx} .icon-connect`).removeClass('connected');
+            $(`#radio${idx} .icon-connect`).addClass('disconnected');
+            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC disconnected');
+        }
+    };
 
-    // This fires when we restart ICE candidates due to exceeding RTT or restarting the mic track
-    peer.addEventListener('negotiationneeded', function() {
-        console.warn(`WebRTC ICE negotiation needed for radio ${radios[idx].name}`);
-        // Create and send a new RTC offer for the radio
-        createRtcOffer(idx);
-    })
+    // Setup the handler for any time connection negotiation is needed
+    peer.onnegotiationneeded = async () => {
+        // Log print
+        console.warn(`[${radios[idx].name}]: WebRTC ICE negotiation needed`);
+        // Setup the offer
+        try {
+            radios[idx].rtc.makingOffer = true;
+            await peer.setLocalDescription();
+            radios[idx].wsRtc.send(JSON.stringify(peer.localDescription));
+        }
+        catch (err) {
+            console.error(`[${radios[idx].name}]: Got exception while sending WebRTC SDP offer:`);
+            console.error(err);
+        }
+        finally {
+            radios[idx].rtc.makingOffer = false;
+        }
+    }
+
+    // Bind the ICE candidate event so we send a new candidate to the daemon whenever one is available
+    peer.onicecandidate = ({ candidate }) => {
+        event.candidate && radios[idx].wsRtc.send(JSON.stringify(candidate));
+    }
 
     // Print initial states
-    console.log(`new peer iceGatheringState for radio ${radios[idx].name}: ${peer.iceGatheringState}`);
-    console.log(`new peer iceConnectionState for radio ${radios[idx].name}: ${peer.iceConnectionState}`);
-    console.log(`new peer signallingState for radio ${radios[idx].name}: ${peer.signalingState}`);
+    console.log(`[${radios[idx].name}]: initial WebRTC peer iceGatheringState: ${peer.iceGatheringState}`);
+    console.log(`[${radios[idx].name}]: initial WebRTC peer iceConnectionState: ${peer.iceConnectionState}`);
+    console.log(`[${radios[idx].name}]: initial WebRTC peer signallingState: ${peer.signalingState}`);
 
-    // Connect audio stream from peer to the web audio objects
-    peer.addEventListener('track', function(event) {
-        if (event.track.kind == 'audio') {
-            console.debug(`New ontrack event for radio ${radios[idx].name}:`);
-            console.debug(event);
-            console.log(`Got new audio track from server for radio ${radios[idx].name}`);
+    // Handle a new audio track from the WebRTC connection
+    peer.ontrack = ({ track, streams }) => {
+        if (track.kind == 'audio') {
+            console.log(`[${radios[idx].name}]: Got new audio track`);
 
             // Create a new MediaStream from the track we want
-            var newStream = new MediaStream( [event.track ]);
+            var newStream = new MediaStream([ track ]);
 
             // Create a dummy stream element (chrome bug means the stream won't play if you don't do this)
             var newDummy = new Audio();
@@ -1901,11 +1948,11 @@ function createPeerConnection(idx) {
             newDummy.srcObject = newStream;
             newDummy.play();
             audio.dummyOutputs.push(newDummy);
-            console.debug(`Started dummy audio element for radio ${radios[idx].name}`);
+            console.debug(`[${radios[idx].name}]: Started dummy audio element`);
 
             // If we already created the audiosrc, don't do it again. Just reconnect the new audio
             if (radios[idx].audioSrc) {
-                console.log(`Reconnecting audio nodes to audio source for radio ${idx}`);
+                console.log(`[${radios[idx].name}]: Reconnecting audio nodes to audio source`);
                 // Create the new audio source node
                 var newAudioNode = audio.context.createMediaStreamSource(newStream);
                 radios[idx].audioSrc.audioNode = newAudioNode;
@@ -1913,7 +1960,7 @@ function createPeerConnection(idx) {
                 radios[idx].audioSrc.audioNode.connect(radios[idx].audioSrc.filterNode);
             // Set up the new audio source
             } else {
-                console.log(`Creating new audio source for radio ${idx}`);
+                console.log(`[${radios[idx].name}]: Creating new audio source`);
                 // Create audio source from the track and put it in an object with a local gain node
                 var newSource = {
                     audioNode: audio.context.createMediaStreamSource(newStream),
@@ -1961,78 +2008,95 @@ function createPeerConnection(idx) {
             // Update the radio audio
             updateRadioAudio();
         }
-    })
+    };
 
     // Return the new peer object
     return peer;
 }
 
 /**
- * Creates and sends a new RTC SDP offer to the radio daemon
- * @param {int} idx index of radio
- * @returns true if successful, false otherwise
+ * Handler for WebRTC websocket messages
+ * @param {*} event 
+ * @param {*} idx 
  */
-function createRtcOffer(idx) {
-    // Generate the SDP offer and set the local description
-    /*radios[idx].rtc.peer.createOffer().then((offer) => {
-        radios[idx].rtc.peer.setLocalDescription(offer);
-    }).then(() => {
-        // Once we've set the local description, wait for ICE gathering to complete
-        console.debug("Waiting for icegatheringstate complete");
-        return new Promise(function(resolve) {
-            if (radios[idx].rtc.peer.iceGatheringState === 'complete') {
-                console.debug("...done!")
-                resolve();
-            } else {
-                function checkState() {
-                    if (radios[idx].rtc.peer.iceGatheringState === 'complete') {
-                        radios[idx].rtc.peer.removeEventListener('icegatheringstatechange', checkState);
-                        console.debug("...done!")
-                        resolve();
-                    }
-                }
-                radios[idx].rtc.peer.addEventListener('icegatheringstatechange', checkState);
-            }
-        });
-    }).then(() => {
-        // Modify the offer for the codec we want to use (basically just filters available RTC codecs for the one we're looking for)
-        radios[idx].rtc.peer.localDescription.sdp = sdpFilterCodec('audio', rtcConf.codec, rtcConf.bitrate, radios[idx].rtc.peer.localDescription.sdp);
-        // Send the offer to the server via WebSocket
-        console.debug("Sending local description to daemon");
-        console.debug(radios[idx].rtc.peer.localDescription.sdp);
-        radios[idx].wsRtc.send(JSON.stringify(radios[idx].rtc.peer.localDescription));
-    }).catch(function(e) {
-        console.error(`"Got exception during RTC offer creation: \n${e}`);
-        return false;
-    });*/
-    // ICE candidate handler
-    radios[idx].rtc.peer.onicecandidate = (event) => {
-        event.candidate && radios[idx].wsRtc.send(JSON.stringify(event.candidate));
-    }
-    // Return true if nothing bad happened
-    return true;
-}
-
-function handleRtcWsMsg(event, idx)
+async function handleRtcWsMsg(event, idx)
 {
-    console.debug(`Radio ${idx} Got WebRTC WS message: ${event.data}`);
-    var obj = JSON.parse(event.data);
-    if (obj?.candidate) {
-        console.debug("Got WebRTC ICE Candidate");
-        radios[idx].rtc.peer.addIceCandidate(obj);
-    }
-    else if (obj?.sdp) {
-        console.debug("Got WebRTC remote description");
-        // Make sure we created the PC
-        if (radios[idx].rtc.peer == null) {
-            console.warn("Got WebRTC SDP before peer was created!");
-            radios[idx].rtc.peer = createPeerConnection(idx);
+    console.debug(`[${radios[idx].name}]: Got WebRTC WS message: ${event.data}`);
+    try {
+        const msg = JSON.parse(event.data);
+
+        // Handler for SDPs
+        if (msg.type === "offer" || msg.type === "answer") {
+            const description = new RTCSessionDescription({
+                type: msg.type,
+                sdp: msg.sdp
+            });
+            
+            // Determine our current state
+            const readyForOffer = !radios[idx].rtc.makingOffer && (radios[idx].rtc.peer.signalingState === "stable" || radios[idx].rtc.isSettingRemoteAnswerPending);
+            const offerCollision = description.type === "offer" && !readyForOffer;
+
+            // Ignore a new offer if we're not ready for one
+            radios[idx].rtc.ignoreOffer = !polite && offerCollision;
+            if (radios[idx].rtc.ignoreOffer) {
+                console.warn(`[${radios[idx].name}]: Ignoring SDP offer, connection not ready!`);
+                return;
+            }
+
+            // If we got an answer, set the remote description
+            radios[idx].rtc.isSettingRemoteAnswerPending = description.type === "answer";
+            console.debug(`[${radios[idx].name}]: Setting RTC peer remote description`);
+            await radios[idx].rtc.peer.setRemoteDescription(description);
+            radios[idx].rtc.isSettingRemoteAnswerPending = false;
+
+            // Apply any pending ICE candidates now
+            for (const c of radios[idx].rtc.pendingCandidates) {
+                try {
+                    await radios[idx].rtc.peer.addIceCandidate(c);
+                } catch (err) {
+                    console.error(`[${radios[idx].name}]: caught exception while adding pending ICE candidate to WebRTC peer connection`);
+                    console.error(c);
+                    console.error(err);
+                }
+            }
+            radios[idx].rtc.pendingCandidates = [];
+
+            // Handle the offer
+            if (description.type === "offer") {
+                // Create an answer
+                const answer = await radios[idx].rtc.peer.createAnswer();
+                await radios[idx].rtc.peer.setLocalDescription(answer);
+                console.debug(`[${radios[idx].name}]: Got SDP offer, sending local description`);
+                radios[idx].wsRtc.send(JSON.stringify(radios[idx].rtc.peer.localDescription));
+            }
         }
-        // Set peer SDP and answer
-        radios[idx].rtc.peer.setRemoteDescription(new RTCSessionDescription(obj));
-        radios[idx].rtc.peer.createAnswer()
-            .then((answer) => radios[idx].rtc.peer.setLocalDescription(answer))
-            .then(() => radios[idx].wsRtc.send(JSON.stringify(radios[idx].rtc.peer.localDescription)));
+        // Handler for ICE candidates
+        else if (msg.candidate) {
+            const ice = {
+                candidate: msg.candidate,
+                sdpMid: msg.sdpMid,
+                sdpMLineIndex: msg.sdpMLineIndex
+            };
+
+            // Buffer the candidate if we don't have a remote description yet
+            if (!radios[idx].rtc.peer.remoteDescription) {
+                console.debug(`[${radios[idx].name}]: buffering ICE candidate ${msg.candidate} until remote description is set`);
+                radios[idx].rtc.pendingCandidates.push(ice);
+                return;
+            }
+            
+            // Otherwise, apply the candidate right away
+            try {
+                await radios[idx].rtc.peer.addIceCandidate(ice);
+            } catch (err) {
+                if (!radios[idx].rtc.ignoreOffer) {
+                    throw err;
+                }
+            }
+        }
+    } catch (err) {
+        console.error(`[${radios[idx].name}]: caught exception while handling WebRTC socket message!`);
+        console.error(err);
     }
 }
 
@@ -2158,7 +2222,6 @@ function checkRoundTripTime(idx) {
             // Iterate over each stats looking for the candidate pair stats
             stats.forEach((report) => {
                 if (report && report.type === "candidate-pair" && report.state === "succeeded") {
-                    //console.debug(`Got new candidate stats for radio ${idx}`, report)
                     // Shift the rtt array with the new rtt value
                     radios[idx].rtc.rttArray.shift();
                     radios[idx].rtc.rttArray.push(report.currentRoundTripTime);
@@ -2167,18 +2230,13 @@ function checkRoundTripTime(idx) {
                     // Update the radio latency parameters
                     radios[idx].rtc.txLatency = rtcConf.txBaseLatency + (radios[idx].rtc.rttAvg * 1000);
                     radios[idx].rtc.rxLatency = rtcConf.rxBaseLatency + (radios[idx].rtc.rttAvg * 1000);
-                    //console.debug(`Current RTT average for radio ${idx}: ${rttAvg}`);
                     // If we're above the threshold, throw a disconnect warning
                     if (radios[idx].rtc.rttAvg > rtcConf.rttLimit) {
-                        console.error(`WebRTC round trip time (${radios[idx].rtc.rttAvg}) exceeded limit (${rtcConf.rttLimit}) for radio ${idx}, restarting ICE`);
+                        console.error(`[${radios[idx].name}]: WebRTC round trip time (${radios[idx].rtc.rttAvg}) exceeded limit (${rtcConf.rttLimit}), restarting ICE`);
                         disconnectRadio(idx);
                         setTimeout(() => {
                             connectRadio(idx);
                         }, 500);
-                        //stopWebRtc(idx);
-                        //startWebRtc(idx);
-                        // restarting ICE didn't seem to fix latency
-                        //radios[idx].rtc.peer.restartIce();
                     }
                 }
             })
@@ -2187,7 +2245,7 @@ function checkRoundTripTime(idx) {
             }, rtcConf.statCheckTime);
         })
     } else {
-        console.warn(`Peer connection closed, stopping RTT monitoring for radio ${idx}`);
+        console.warn(`[${radios[idx].name}]: Peer connection closed, stopping RTT monitoring`);
         return;
     }
 }
@@ -2349,15 +2407,15 @@ function restartMicTrack() {
 }
 
 function reconnectRadioMicTrack(idx) {
-    console.log(`Reconnecting audio track for radio ${idx}`);
+    console.debug(`[${radios[idx].name}]: Reconnecting mic audio track`);
     const sender = radios[idx].rtc.peer.getSenders()[0];
     if (sender && radios[idx].rtc.peer.connectionState == 'connected') {
         // If the sender still exists, just replace the track
-        console.log("Sender still alive, replacing track");
+        console.debug(`[${radios[idx].name}]: Sender still alive, replacing track`);
         sender.replaceTrack(audio.inputTrack);
     } else {
         // Add a new track if the sender died
-        console.warn("Sender dead, adding new track");
+        console.warn(`[${radios[idx].name}]: Sender dead, adding new mic track`);
         radios[idx].rtc.peer.addTrack(audio.inputTrack);
     }
 }
@@ -2534,23 +2592,23 @@ function bonk() {
     radios.forEach(function(radio, idx) {
         // Ignore if audio not connected
         if (radios[idx].audioSrc == null) {
-            console.debug(`Audio not connected for radio ${radios[idx].name}, skipping`);
+            console.debug(`  - Audio not connected for radio ${radios[idx].name}, skipping`);
             return;
         }
         if (idx == selectedRadioIdx) {
-            console.debug(`Radio ${radios[idx].name} is selected. Setting gain to 1`);
+            console.debug(`  - Radio ${radios[idx].name} is selected. Setting gain to 1`);
             radios[idx].audioSrc.gainNode.gain.setValueAtTime(1, audio.context.currentTime);
         } else {
-            console.debug(`Radio ${radios[idx].name} is unselected. Setting gain to ${config.Audio.UnselectedVol}`);
+            console.debug(`  - Radio ${radios[idx].name} is unselected. Setting gain to ${config.Audio.UnselectedVol}`);
             radios[idx].audioSrc.gainNode.gain.setValueAtTime(dbToGain(config.Audio.UnselectedVol), audio.context.currentTime);
         }
         // Set AGC based on user setting
         if (config.Audio.UseAGC) {
-            console.log(`Enabling AGC for radio ${radios[idx].name}`);
+            console.log(`  - Enabling AGC for radio ${radios[idx].name}`);
             radios[idx].audioSrc.agcNode.threshold.setValueAtTime(audio.agcThreshold, audio.context.currentTime);
             radios[idx].audioSrc.makeupNode.gain.setValueAtTime(audio.agcMakeup, audio.context.currentTime);
         } else {
-            console.log(`Byassing AGC for radio ${radios[idx].name}`);
+            console.log(`  - Byassing AGC for radio ${radios[idx].name}`);
             radios[idx].audioSrc.agcNode.threshold.setValueAtTime(0, audio.context.currentTime);
             radios[idx].audioSrc.makeupNode.gain.setValueAtTime(1.0, audio.context.currentTime);
         }
@@ -2588,22 +2646,22 @@ function muteRadio(idx, mute) {
  * Various audio updates for the specified radio
  */
 function updateAudio(idx) {
-    console.debug(`Updating audio for radio ${idx}`);
+    console.debug(`[${radios[idx].name}]: Updating audio settings`);
     // Do nothing if audio sources aren't connected
     if (radios[idx].audioSrc == null) { 
-        console.debug(`Audio not connected for radio ${radios[idx].name}, skipping`);
+        console.debug(`  - Audio sources not connected, skipping`);
         return;
     }
     // Mute if we're muted or not receiving, after the specified delay in rtc.rxLatency
     if (radios[idx].mute || !(radios[idx].status.State === 'Receiving' || radios[idx].status.State === 'Encrypted')) {
         setTimeout(function() {
-            console.debug(`Muting audio for radio ${radios[idx].name}`);
+            console.debug(`  - Muting audio for radio ${radios[idx].name}`);
             radios[idx].audioSrc.muteNode.gain.setValueAtTime(0, audio.context.currentTime);
         }, radios[idx].rtc.rxLatency);
     // Unmute only if we're not forced muted by the client
     } else if (!radios[idx].mute) {
         setTimeout(function() {
-            console.debug(`Unmuting audio for radio ${radios[idx].name}`);
+            console.debug(`  - Unmuting audio for radio ${radios[idx].name}`);
             radios[idx].audioSrc.muteNode.gain.setValueAtTime(1, audio.context.currentTime);
         }, radios[idx].rtc.rxLatency);
     }
@@ -2662,7 +2720,7 @@ function changePan(event, obj) {
     const radioId = $(obj).closest(".radio-card").attr('id');
     const idx = getRadioIndex(radioId);
     // Debug log
-    console.debug(`Setting new pan for radio ${radios[idx]} to ${newPan}`);
+    console.debug(`[${radios[idx].name}]: Setting new pan value ${newPan}`);
     // Set pan
     radios[idx].pan = newPan;
     radios[idx].audioSrc.panNode.pan.setValueAtTime(newPan, audio.context.currentTime);
@@ -2680,7 +2738,7 @@ function centerPan(event, obj) {
     const radioId = $(obj).closest(".radio-card").attr('id');
     const idx = getRadioIndex(radioId);
     // Update pan
-    console.debug(`Resetting pan for radio ${radios[idx]}`);
+    console.debug(`[${radios[idx].name}]: Resetting pan value`);
     // Set pan
     radios[idx].audioSrc.panNode.pan.setValueAtTime(0, audio.context.currentTime);
 }
@@ -3033,9 +3091,9 @@ function waitForWebSockets(sockets, callback=null) {
  */
 function onConnectWebsocket(idx) {
     //$("#navbar-status").html("Websocket connected");
-    console.log(`Websockets connected for radio ${radios[idx].name}`);
+    console.log(`[${radios[idx].name}]: Websocket connection established`);
     // Query radio status
-    console.log(`Querying radio ${radios[idx].name} status`);
+    console.log(`[${radios[idx].name}]: Querying radio status`);
     radios[idx].wsConn.send(JSON.stringify(
         {
             "radio": {
@@ -3096,7 +3154,7 @@ function recvSocketMessage(event, idx) {
     try {
         msgObj = JSON.parse(event.data);
     } catch (e) {
-        console.warn(`Got invalid data from radio ${radios[idx].name} websocket: ` + event.data);
+        console.warn(`[${radios[idx].name}]: Got invalid data websocket:`, event.data);
         console.warn(e);
         return;
     }
@@ -3110,7 +3168,7 @@ function recvSocketMessage(event, idx) {
                 // get status data
                 var radioStatus = msgObj['status'];
                 // Debug
-                console.debug(`Got status update for radio ${radios[idx].name}:`, radioStatus);
+                console.debug(`[${radios[idx].name}]: Got status update:`, radioStatus);
                 // Update radio entry
                 radios[idx].status = radioStatus;
                 // Update radio card
@@ -3217,9 +3275,8 @@ function handleSocketClose(event, idx) {
  * @param {event} event 
  */
 function handleSocketError(event, idx) {
-    console.error(`Websocket connection error for radio ${radios[idx].name}`);
-    console.debug(event);
-    //window.alert("Server connection errror: " + event.data);
+    console.error(`[${radios[idx].name}]: Websocket connection error:`);
+    console.error(event);
 }
 
 function restartRadio(event, obj) {
