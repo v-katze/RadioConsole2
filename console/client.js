@@ -226,6 +226,7 @@ var maxPages = 0;
 
 // Populate version callback
 window.electronAPI.getVersion((event, data) => {
+    console.debug(`Got version string from main.js: ${data}`);
     $("#navbar-version").html(data);
 });
 
@@ -285,7 +286,7 @@ function radioConnected(idx) {
     $(`#radio${idx} .icon-connect`).removeClass('disconnected');
     $(`#radio${idx} .icon-connect`).removeClass('connecting');
     $(`#radio${idx} .icon-connect`).addClass('connected');
-    $(`#radio${idx} .icon-connect`).parent().prop('title','Connected, OK');
+    $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC Connected');
     // Update master connect/disconnect button
     $(`#navbar-connect`).removeClass('disconnected');
     $(`#navbar-connect`).addClass('connected');
@@ -1809,6 +1810,9 @@ function stopWebRtc(idx) {
     radios[idx].rtc.peer.close();
     radios[idx].rtc.peer = null;
 
+    // Close the WebRTC websocket connection
+    radios[idx].wsRtc.close();
+
     // Reset audio routing
     radios[idx].audioSrc = null;
 }
@@ -1850,23 +1854,20 @@ function createPeerConnection(idx) {
     peer.oniceconnectionstatechange = () => {
         console.debug(`[${radios[idx].name}]: new WebRTC peer iceConnectionState: ${peer.iceConnectionState}`);
         if (peer.iceConnectionState == "connected") {
-            // update UI
-            radioConnected(idx);
-            // Create array for averaging roundTripTime
-            radios[idx].rtc.rttArray = new Array(rtcConf.rttSize).fill(0);
-            // Start monitoring roundTripTime
-            checkRoundTripTime(idx);
+            // We're almost there
+            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC ICE connected, waiting for final connection');
         } else if (peer.iceConnectionState == "failed") {
             // Disconnect the client if we had an error (for now, maybe auto-reconnect later?)
             console.error(`[${radios[idx].name}]: WebRTC ICE connection failed`);
-            stopWebRtc(idx);
+            if (radios[idx].status.State != 'Disconnected') {
+                disconnectRadio(idx);
+            }
             //radios[idx].wsConn.close();
         } else if (peer.iceConnectionState == "disconnected") {
             console.error(`[${radios[idx].name}]: WebRTC ICE connection disconnected`);
-            stopWebRtc(idx);
-            /**if (radios[idx].wsConn) {
-                radios[idx].wsConn.close();
-            }*/
+            if (radios[idx].status.State != 'Disconnected') {
+                disconnectRadio(idx);
+            }
         }
     };
 
@@ -1882,19 +1883,33 @@ function createPeerConnection(idx) {
             $(`#radio${idx} .icon-connect`).removeClass('connected');
             $(`#radio${idx} .icon-connect`).removeClass('disconnected');
             $(`#radio${idx} .icon-connect`).addClass('connecting');
-            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC peer connecting');
+            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC Connecting');
         }
         else if (peer.connectionState === "connected") {
-            $(`#radio${idx} .icon-connect`).removeClass('connecting');
-            $(`#radio${idx} .icon-connect`).removeClass('disconnected');
-            $(`#radio${idx} .icon-connect`).addClass('connected');
-            $(`#radio${idx} .icon-connect`).parent().prop('title','Connected, OK');
+            // update UI
+            radioConnected(idx);
+            // Create array for averaging roundTripTime
+            radios[idx].rtc.rttArray = new Array(rtcConf.rttSize).fill(0);
+            // Start monitoring roundTripTime
+            checkRoundTripTime(idx);
         }
         else if (peer.connectionState === "disconnected") {
             $(`#radio${idx} .icon-connect`).removeClass('connecting');
             $(`#radio${idx} .icon-connect`).removeClass('connected');
             $(`#radio${idx} .icon-connect`).addClass('disconnected');
-            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC disconnected');
+            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC Disconnected');
+            if (radios[idx].status.State != 'Disconnected') {
+                disconnectRadio(idx);
+            }
+        }
+        else if (peer.connectionState === "failed") {
+            $(`#radio${idx} .icon-connect`).removeClass('connecting');
+            $(`#radio${idx} .icon-connect`).removeClass('connected');
+            $(`#radio${idx} .icon-connect`).addClass('disconnected');
+            $(`#radio${idx} .icon-connect`).parent().prop('title','WebRTC Failed');
+            if (radios[idx].status.State != 'Disconnected') {
+                disconnectRadio(idx);
+            }
         }
     };
 
@@ -1919,7 +1934,15 @@ function createPeerConnection(idx) {
 
     // Bind the ICE candidate event so we send a new candidate to the daemon whenever one is available
     peer.onicecandidate = ({ candidate }) => {
-        event.candidate && radios[idx].wsRtc.send(JSON.stringify(candidate));
+        if (event.candidate) {
+            radios[idx].wsRtc.send(JSON.stringify(candidate));
+        } else {
+            radios[idx].wsRtc.send(JSON.stringify({
+                candidate: null,
+                sdpMid: null,
+                sdpMLineIndex: null
+            }));
+        }
     }
 
     // Print initial states
@@ -2072,7 +2095,7 @@ async function handleRtcWsMsg(event, idx)
             };
 
             // Buffer the candidate if we don't have a remote description yet
-            if (!radios[idx].rtc.peer.remoteDescription) {
+            if (!Object.hasOwn(radios[idx].rtc.peer, 'remoteDescription')) {
                 console.debug(`[${radios[idx].name}]: buffering ICE candidate ${msg.candidate} until remote description is set`);
                 radios[idx].rtc.pendingCandidates.push(ice);
                 return;
