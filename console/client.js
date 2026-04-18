@@ -2775,7 +2775,7 @@ function dtmfPressed(event, obj) {
         return;
     }
     // Get the dtmf dialpad span
-    const dialpad = document.querySelector('.dtmf-digits');
+    const dialpad = obj.closest('.button-stack').querySelector('.dtmf-digits');
     // Get digit number
     const digit = cell.innerHTML;
     // Get ID of the radio this dialpad is for
