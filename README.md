@@ -29,4 +29,4 @@ Discord, you can always [create an issue using our bug issue template](https://g
 
 ## Development
 
-See the development section of the documentatioion at [ReadTheDocs/Development](https://rc2.readthedocs.io/en/latest/development.html) for information on getting started developing for RC2
+See the development section of the documentatioion at [ReadTheDocs/Development](https://rc2.readthedocs.io/en/latest/development/development.html) for information on getting started developing for RC2
